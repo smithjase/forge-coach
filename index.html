@@ -1,0 +1,1150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>FORGE.coach</title>
+  <meta name="description" content="Endurance coaching app — 80/20 polarised training, low-dose carb fuelling, metabolic health" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔥</text></svg>" />
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #08080a; overflow-x: hidden; -webkit-font-smoothing: antialiased; }
+    input, textarea, button { font-family: inherit; }
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #08080a; }
+    ::-webkit-scrollbar-thumb { background: #1a1a1e; border-radius: 3px; }
+    input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.7); }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+
+  <script type="text/babel">
+    const { useState, useEffect, useCallback, useRef } = React;
+
+// ═══════════════════════════════════════════════════
+// FORGE.coach — Endurance Coaching App
+// Built on: 80/20 polarised training, low-dose carb
+// fuelling (Noakes 2026), metabolic health principles
+// ═══════════════════════════════════════════════════
+
+const STORAGE_KEY = "forge-coach-v2";
+
+// localStorage helpers (replaces window.storage from Claude)
+const storage = {
+  get(key) {
+    try { const v = localStorage.getItem(key); return v ? { value: v } : null; }
+    catch (e) { return null; }
+  },
+  set(key, value) {
+    try { localStorage.setItem(key, value); return true; }
+    catch (e) { return null; }
+  },
+  delete(key) {
+    try { localStorage.removeItem(key); return true; }
+    catch (e) { return null; }
+  }
+};
+
+const NUTRITION = {
+  z2_short: "Water or electrolyte tab. Maximise fat oxidation.",
+  z2_long: "Carb drink ~15g/h (maltodextrin mix). Real food from 90 mins.",
+  tempo_short: "Water or electrolyte tab.",
+  tempo_long: "Carb drink from 45–60 mins in.",
+  race: "Hydration vest 2L carb mix. Gels from hr 2. Electrolyte bottle on bike.",
+  solid_food: "Flapjack, rice cake, or banana every 45 mins from hr 1.",
+  strength: "Normal meals. No special fuelling.",
+  commute: "Water only. No fuelling needed.",
+  recovery: "Protein-rich meal within 60 mins. No rush on carbs.",
+};
+
+const GOAL_TEMPLATES = [
+  { name: "3:2:1 Mont Blanc", desc: "2-day circumnavigation of Mont Blanc. 320km, ~10,000m elevation. The big one.", icon: "🏔️", defaultWeeks: 20 },
+  { name: "Gravel Race (100–120km)", desc: "4–5 hour gravel race at tempo+. Demands sustained power and fuelling.", icon: "🌿", defaultWeeks: 12 },
+  { name: "Sportive (150–200km)", desc: "Long day road sportive. Pacing, nutrition, and endurance.", icon: "🚴", defaultWeeks: 14 },
+  { name: "Ultra Run (50km+)", desc: "Ultra-distance running. Fat oxidation and durability are king.", icon: "🏃", defaultWeeks: 16 },
+  { name: "Custom Goal", desc: "Define your own challenge.", icon: "🎯", defaultWeeks: 12 },
+];
+
+function weeksUntil(dateStr) {
+  if (!dateStr) return 12;
+  return Math.max(4, Math.round((new Date(dateStr) - new Date()) / (7 * 86400000)));
+}
+
+function formatDate(d) {
+  return new Date(d).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+}
+
+function generatePlan(goalName, totalWeeks) {
+  const baseW = Math.max(4, Math.floor(totalWeeks * 0.55));
+  const buildW = Math.max(2, Math.floor(totalWeeks * 0.3));
+  const taperW = Math.max(1, totalWeeks - baseW - buildW);
+  const weeks = [];
+
+  for (let w = 1; w <= totalWeeks; w++) {
+    let phase, focus, sessions;
+    const isRecovery = w % 4 === 0;
+
+    if (w <= baseW) {
+      phase = "Base";
+      focus = isRecovery
+        ? "Recovery week — reduce volume 30%. Absorb training. Stay in Z2."
+        : "Build aerobic engine. High Z2 volume. Establish consistency.";
+      const longHrs = isRecovery ? 2 : Math.min(2.5 + (w / baseW) * 2, 4.5);
+      const z2dur = isRecovery ? 70 : 90 + Math.min(w * 4, 30);
+      const runDur = isRecovery ? 35 : 45 + Math.min(w * 2, 15);
+
+      sessions = [
+        { day: "Mon", name: "Strength", type: "strength", mins: isRecovery ? 35 : 50, zone: "N/A", detail: "Squats, deadlifts, hip hinges, single-leg, push/pull, core. Moderate load, not to failure.", fuel: NUTRITION.strength },
+        { day: "Tue", name: "Bike Z2", type: "bike", mins: z2dur, zone: "Z2", detail: "Upper Z2. Cadence 85–95. Nose-breathing effort. Don't drift into Z3.", fuel: z2dur > 120 ? NUTRITION.z2_long : NUTRITION.z2_short },
+        { day: "Wed", name: "Run Intervals", type: "run", mins: isRecovery ? 40 : 50, zone: isRecovery ? "Z2" : "Z4–Z5", detail: isRecovery ? "Easy run. No intensity this week." : (w < baseW / 2 ? "WU 15min → 6×2min hard / 2min jog → CD 10min" : "WU 15min → 4×4min threshold / 2min jog → CD 10min"), fuel: NUTRITION.tempo_short },
+        { day: "Thu", name: "Commute (+)", type: "commute", mins: 75, zone: "Z1–Z2", detail: "15km each way. BST months: add 15–20km scenic return. Keep easy — recovery from Wed.", fuel: NUTRITION.commute },
+        { day: "Fri", name: "Run Z2", type: "run", mins: runDur, zone: "Z2", detail: "Conversational pace. Aerobic base + run durability. Legs fresh for Sat.", fuel: NUTRITION.z2_short },
+        { day: "Sat", name: "Long Ride", type: "bike", mins: longHrs * 60, zone: "Z2", detail: `${longHrs}hr ride. Mostly Z2, natural intensity on climbs. ${longHrs >= 2.5 ? "Practice race nutrition." : ""}`, fuel: longHrs >= 2 ? NUTRITION.z2_long : NUTRITION.z2_short },
+        { day: "Sun", name: isRecovery ? "Full Rest" : "Easy Spin / Rest", type: isRecovery ? "rest" : "bike", mins: isRecovery ? 0 : 45, zone: isRecovery ? "—" : "Z1", detail: isRecovery ? "Complete rest. Recovery week." : "Gentle spin or rest. Listen to your body.", fuel: NUTRITION.commute },
+      ];
+    } else if (w <= baseW + buildW) {
+      phase = "Build";
+      focus = isRecovery
+        ? "Recovery week — reduced volume, maintain one intensity session."
+        : "Race-specific demands. Sustained efforts. Full nutrition rehearsals.";
+      const longHrs = isRecovery ? 2.5 : Math.min(4 + ((w - baseW) / buildW) * 1.5, 5.5);
+
+      sessions = [
+        { day: "Mon", name: "Strength (maintain)", type: "strength", mins: 40, zone: "N/A", detail: "Maintain compound lifts. Slightly reduced volume from Base.", fuel: NUTRITION.strength },
+        { day: "Tue", name: "Bike Tempo Blocks", type: "bike", mins: isRecovery ? 75 : 105, zone: isRecovery ? "Z2" : "Z2–Z3", detail: isRecovery ? "Easy Z2. No tempo." : "90min with 2×15min tempo at target race watts. Z2 recovery between.", fuel: NUTRITION.tempo_long },
+        { day: "Wed", name: "Run Intervals", type: "run", mins: isRecovery ? 40 : 55, zone: isRecovery ? "Z2" : "Z4–Z5", detail: isRecovery ? "Easy run only." : "WU 15min → 3×8min threshold / 3min jog → CD 10min", fuel: NUTRITION.tempo_short },
+        { day: "Thu", name: "Commute (+)", type: "commute", mins: 90, zone: "Z2", detail: "Commute + extended return in BST. Easy active recovery.", fuel: NUTRITION.commute },
+        { day: "Fri", name: "Run Z2 / Preload", type: "run", mins: 45, zone: "Z2", detail: "Easy. Keep legs fresh for Saturday's key session.", fuel: NUTRITION.z2_short },
+        { day: "Sat", name: "Long Ride (race sim)", type: "bike", mins: longHrs * 60, zone: "Z2–Z3", detail: `${longHrs}hrs. Include 30–45min sustained tempo. FULL race nutrition rehearsal — vest, gels, food.`, fuel: NUTRITION.race },
+        { day: "Sun", name: isRecovery ? "Full Rest" : "Easy Spin", type: isRecovery ? "rest" : "bike", mins: isRecovery ? 0 : 40, zone: isRecovery ? "—" : "Z1", detail: isRecovery ? "Complete rest." : "30–40min spin. Very easy.", fuel: NUTRITION.commute },
+      ];
+    } else {
+      phase = "Peak & Taper";
+      focus = "Reduce volume 40%. Maintain sharpness. Build confidence. Trust the work.";
+      const tIdx = w - baseW - buildW;
+
+      sessions = [
+        { day: "Mon", name: "Strength (light)", type: "strength", mins: 25, zone: "N/A", detail: "Bodyweight + light load. Mobility. Maintain neuromuscular patterns.", fuel: NUTRITION.strength },
+        { day: "Tue", name: "Bike Openers", type: "bike", mins: 65, zone: "Z2–Z4", detail: "55min easy + 3×5min at race effort. Keep the engine sharp.", fuel: NUTRITION.tempo_short },
+        { day: "Wed", name: "Run Sharpener", type: "run", mins: 35, zone: "Z2–Z4", detail: "WU 12min → 4×90sec hard / 2min easy → CD 10min. Short and crisp.", fuel: NUTRITION.tempo_short },
+        { day: "Thu", name: "Commute only", type: "commute", mins: 60, zone: "Z1", detail: "Normal commute. No extension. Save legs.", fuel: NUTRITION.commute },
+        { day: "Fri", name: tIdx >= taperW ? "Rest / Travel" : "Easy jog", type: tIdx >= taperW ? "rest" : "run", mins: tIdx >= taperW ? 0 : 25, zone: tIdx >= taperW ? "—" : "Z1", detail: tIdx >= taperW ? "Rest or travel to event." : "20–25min gentle shake-out.", fuel: NUTRITION.commute },
+        { day: "Sat", name: w === totalWeeks ? "🔥 EVENT DAY" : "Pre-event ride", type: "bike", mins: w === totalWeeks ? 0 : 120, zone: w === totalWeeks ? "RACE" : "Z2", detail: w === totalWeeks ? "Execute the plan. Trust the training. Enjoy it." : "2hrs easy. A few 5min race efforts. Final rehearsal + nutrition check.", fuel: w === totalWeeks ? NUTRITION.race : NUTRITION.z2_long },
+        { day: "Sun", name: "Rest", type: "rest", mins: 0, zone: "—", detail: "Full rest.", fuel: "" },
+      ];
+    }
+
+    weeks.push({ num: w, phase, focus, sessions, done: Array(7).fill(false), notes: "", garminNotes: "" });
+  }
+  return weeks;
+}
+
+// ═══════════════════════════════════════
+// STYLES
+// ═══════════════════════════════════════
+const C = {
+  bg: "#08080a", card: "#0e0e11", cardBorder: "#18181d", accent: "#d4a574",
+  accentDim: "#8a7056", text: "#c8c8cc", textDim: "#666670", textFaint: "#3a3a42",
+  green: "#5ccc5c", greenBg: "#0f1a0f", greenBorder: "#1a2e1a",
+  red: "#cc5c5c", redBg: "#1a0f0f",
+  blue: "#5c8ccc", blueBg: "#0f0f1a", blueBorder: "#1a1a2e",
+  orange: "#cca05c", orangeBg: "#1a150f",
+  surface: "#121216",
+};
+
+const font = "'SF Mono', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace";
+
+// ═══════════════════════════════════════
+// API KEY CONFIG
+// ═══════════════════════════════════════
+function getApiKey() {
+  return localStorage.getItem("forge-api-key") || "";
+}
+function setApiKey(key) {
+  localStorage.setItem("forge-api-key", key);
+}
+
+// ═══════════════════════════════════════
+// APP
+// ═══════════════════════════════════════
+function ForgeCoach() {
+  const [screen, setScreen] = useState("home");
+  const [goal, setGoal] = useState({ template: null, name: "", desc: "", date: "" });
+  const [plan, setPlan] = useState(null);
+  const [selWeek, setSelWeek] = useState(null);
+  const [garminUploads, setGarminUploads] = useState([]);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [coachInsight, setCoachInsight] = useState(null);
+  const [aeroTests, setAeroTests] = useState([]);
+  const [aeroForm, setAeroForm] = useState({ type: "maf_run", date: new Date().toISOString().split("T")[0], hr: "", pace: "", power: "", duration: "", drift: "", rpe: "", notes: "" });
+  const [aeroInsight, setAeroInsight] = useState(null);
+  const [apiKeyInput, setApiKeyInput] = useState(getApiKey());
+  const [showSettings, setShowSettings] = useState(false);
+  const fileRef = useRef(null);
+
+  // ── Persistence (localStorage) ──
+  useEffect(() => {
+    const r = storage.get(STORAGE_KEY);
+    if (r?.value) {
+      try {
+        const s = JSON.parse(r.value);
+        if (s.goal) setGoal(s.goal);
+        if (s.plan) { setPlan(s.plan); setScreen("dashboard"); }
+        if (s.garminUploads) setGarminUploads(s.garminUploads);
+        if (s.aeroTests) setAeroTests(s.aeroTests);
+      } catch (e) {}
+    }
+  }, []);
+
+  const save = useCallback((p, g, gu, at) => {
+    storage.set(STORAGE_KEY, JSON.stringify({
+      goal: g || goal, plan: p || plan, garminUploads: gu || garminUploads, aeroTests: at || aeroTests
+    }));
+  }, [goal, plan, garminUploads, aeroTests]);
+
+  // ── AI helper ──
+  async function callAI(messages) {
+    const key = getApiKey();
+    if (!key) { setShowSettings(true); return null; }
+    const resp = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": key,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true"
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 1000,
+        messages
+      })
+    });
+    const data = await resp.json();
+    if (data.error) throw new Error(data.error.message || "API error");
+    return data.content?.filter(i => i.type === "text").map(i => i.text).join(" ") || null;
+  }
+
+  // ── Actions ──
+  function createPlan() {
+    const wks = weeksUntil(goal.date);
+    const g = { ...goal, weeksOut: wks };
+    const p = generatePlan(g.name, wks);
+    setGoal(g); setPlan(p); setScreen("dashboard");
+    save(p, g);
+  }
+
+  function resetApp() {
+    setPlan(null); setGoal({ template: null, name: "", desc: "", date: "" });
+    setGarminUploads([]); setCoachInsight(null); setAeroTests([]); setAeroInsight(null); setScreen("home");
+    storage.delete(STORAGE_KEY);
+  }
+
+  function submitAeroTest() {
+    const entry = { ...aeroForm, id: Date.now() };
+    const updated = [entry, ...aeroTests];
+    setAeroTests(updated);
+    setAeroForm({ type: "maf_run", date: new Date().toISOString().split("T")[0], hr: "", pace: "", power: "", duration: "", drift: "", rpe: "", notes: "" });
+    save(null, null, null, updated);
+  }
+
+  async function getAeroInsight() {
+    if (!aeroTests.length) return;
+    setAiLoading(true);
+    const mafHR = 180 - 55;
+    try {
+      const text = await callAI([{
+        role: "user",
+        content: `You are FORGE.coach analysing aerobic function tests for a 55-year-old male endurance cyclist/runner. His MAF HR is ${mafHR} bpm. His goals are metabolic health and long endurance events (300km cycling). He follows 80/20 polarised training and low-dose carb fuelling to maximise fat oxidation.
+
+Here are his aerobic test results (newest first):
+${JSON.stringify(aeroTests.slice(0, 10))}
+
+Test types explained:
+- maf_run: MAF test on a run. Pace at fixed MAF HR. Faster pace = better aerobic/fat oxidation.
+- maf_bike: MAF test on bike. Power at fixed MAF HR. Higher power = better aerobic efficiency.
+- hr_drift: Aerobic decoupling test. Fixed pace/power for 60+ min. HR drift % = cardiac drift. Under 5% = good aerobic fitness. Over 5% = aerobic system needs work.
+- fasted_session: Fasted training session. RPE and ability to sustain effort indicates metabolic flexibility / fat oxidation capacity.
+
+Analyse the trend and provide:
+1. AEROBIC TREND: Is aerobic function improving, stable, or declining?
+2. FAT OXIDATION: Based on these proxies, how well adapted is he likely to be at burning fat?
+3. MAF CONTEXT: For age 55, how do these numbers look? What would "good" look like?
+4. ACTION: One specific thing to do to improve aerobic efficiency / fat oxidation further.
+
+Be direct, concise, 6-8 lines. No markdown. Speak like a coach.`
+      }]);
+      setAeroInsight(text || "Keep testing monthly. Trends matter more than single data points.");
+    } catch (e) {
+      setAeroInsight("AI analysis failed: " + e.message);
+    }
+    setAiLoading(false);
+  }
+
+  function toggle(wi, si) {
+    const up = plan.map((w, i) => i === wi ? { ...w, done: w.done.map((d, j) => j === si ? !d : d) } : w);
+    setPlan(up); save(up);
+  }
+
+  function setNotes(wi, val) {
+    const up = plan.map((w, i) => i === wi ? { ...w, notes: val } : w);
+    setPlan(up); save(up);
+  }
+
+  async function uploadGarmin(e) {
+    const files = Array.from(e.target.files);
+    if (!files.length) return;
+    setAiLoading(true);
+
+    const images = [];
+    for (const f of files) {
+      const url = await new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result); fr.readAsDataURL(f); });
+      images.push({ name: f.name, url });
+    }
+
+    let analysis = "Screenshot saved. Add your API key in Settings (⚙) for AI analysis.";
+    try {
+      const key = getApiKey();
+      if (key) {
+        const resp = await fetch("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-api-key": key,
+            "anthropic-version": "2023-06-01",
+            "anthropic-dangerous-direct-browser-access": "true"
+          },
+          body: JSON.stringify({
+            model: "claude-sonnet-4-20250514",
+            max_tokens: 1000,
+            messages: [{
+              role: "user",
+              content: [
+                ...images.map(img => ({
+                  type: "image",
+                  source: { type: "base64", media_type: img.url.includes("png") ? "image/png" : "image/jpeg", data: img.url.split(",")[1] }
+                })),
+                { type: "text", text: `You are FORGE.coach — an endurance cycling/running coach for a 55-year-old male athlete training for long endurance events (300km+). He follows 80/20 polarised training and a low-dose carb fuelling strategy (~15-20g/h based on Noakes 2026 research on EIH prevention).
+
+Analyse this Garmin screenshot. Return a brief structured analysis:
+
+SESSION: [type, duration, distance, avg HR/power if visible]
+ZONE: [training zone assessment]
+POLARISATION CHECK: [does this fit 80/20? Was he in Z3 "no-man's land"?]
+NUTRITION NOTE: [what should he have fuelled with based on session type and duration]
+COACH NOTE: [one actionable observation — e.g. pacing, HR drift, volume, recovery]
+
+Be direct and concise. 5-6 lines max. No markdown formatting.` }
+              ]
+            }]
+          })
+        });
+        const data = await resp.json();
+        analysis = data.content?.filter(i => i.type === "text").map(i => i.text).join(" ") || analysis;
+      }
+    } catch (err) {
+      analysis = "AI analysis failed. Screenshot saved for manual review.";
+    }
+
+    // Store preview as thumbnail to save localStorage space
+    const entry = { id: Date.now(), date: new Date().toISOString(), files: images.map(i => i.name), preview: images[0]?.url?.substring(0, 200000), analysis };
+    const updated = [entry, ...garminUploads];
+    setGarminUploads(updated);
+    setAiLoading(false);
+    save(null, null, updated);
+    if (fileRef.current) fileRef.current.value = "";
+  }
+
+  async function getCoachInsight() {
+    if (!plan) return;
+    setAiLoading(true);
+    const completedByWeek = plan.map(w => {
+      const total = w.sessions.filter(s => s.type !== "rest").length;
+      const done = w.done.filter((d, i) => d && w.sessions[i].type !== "rest").length;
+      return { week: w.num, phase: w.phase, done, total, notes: w.notes };
+    });
+
+    try {
+      const text = await callAI([{
+        role: "user",
+        content: `You are FORGE.coach for a 55-year-old male endurance cyclist training for: "${goal.name}" (${goal.desc}). Event date: ${goal.date}. He follows 80/20 polarised training, does cycling + running + strength + bike commute (15km each way), and uses a low-dose carb strategy for metabolic health.
+
+Here is his training compliance data:
+${JSON.stringify(completedByWeek)}
+
+Recent Garmin analyses:
+${garminUploads.slice(0, 3).map(g => g.analysis).join("\n")}
+
+Provide a coach's weekly check-in:
+1. COMPLIANCE: How is adherence? Any concerning patterns?
+2. PHASE CHECK: Is he on track for the event date?
+3. ADJUSTMENT: One specific recommendation (add/reduce volume, shift intensity, nutrition reminder, recovery focus, etc.)
+4. MOTIVATION: One line of encouragement tied to something specific.
+
+Be direct, warm, and brief. 6-8 lines. No markdown. Speak like a coach, not a textbook.`
+      }]);
+      setCoachInsight(text || "Keep going. Consistency is everything.");
+    } catch (e) {
+      setCoachInsight("AI insight failed: " + e.message);
+    }
+    setAiLoading(false);
+  }
+
+  // ── Stats ──
+  function getStats() {
+    if (!plan) return { pct: 0, done: 0, total: 0, byWeek: [], byType: {}, weeklyHrs: [] };
+    let done = 0, total = 0;
+    const byType = { bike: { done: 0, total: 0 }, run: { done: 0, total: 0 }, strength: { done: 0, total: 0 }, commute: { done: 0, total: 0 } };
+    const byWeek = [];
+    const weeklyHrs = [];
+
+    plan.forEach(w => {
+      let wD = 0, wT = 0, wMins = 0;
+      w.sessions.forEach((s, i) => {
+        if (s.type === "rest") return;
+        wT++; total++;
+        if (w.done[i]) { wD++; done++; wMins += s.mins; }
+        const t = s.type === "commute" ? "commute" : s.type === "bike" ? "bike" : s.type === "run" ? "run" : s.type === "strength" ? "strength" : null;
+        if (t && byType[t]) {
+          byType[t].total++;
+          if (w.done[i]) byType[t].done++;
+        }
+      });
+      byWeek.push(wT > 0 ? Math.round((wD / wT) * 100) : 0);
+      weeklyHrs.push(+(wMins / 60).toFixed(1));
+    });
+
+    return { pct: total > 0 ? Math.round((done / total) * 100) : 0, done, total, byWeek, byType, weeklyHrs };
+  }
+
+  const stats = getStats();
+
+  // ═══════════════════════════════════════
+  // RENDER HELPERS
+  // ═══════════════════════════════════════
+  const Box = ({ children, style, onClick }) => (
+    <div onClick={onClick} style={{ background: C.card, border: `1px solid ${C.cardBorder}`, borderRadius: 10, padding: 18, marginBottom: 12, ...style }}>{children}</div>
+  );
+  const Label = ({ children }) => <div style={{ fontSize: 11, color: C.accentDim, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10, fontFamily: font }}>{children}</div>;
+  const TypeTag = ({ type }) => {
+    const m = { bike: [C.greenBg, C.green, C.greenBorder], run: [C.redBg, C.red, "#2e1a1a"], strength: [C.blueBg, C.blue, C.blueBorder], commute: [C.orangeBg, C.orange, "#2e2a1a"], rest: ["#111", "#444", "#222"] };
+    const [bg, fg, bd] = m[type] || m.rest;
+    return <span style={{ background: bg, color: fg, border: `1px solid ${bd}`, padding: "2px 7px", borderRadius: 4, fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em", fontFamily: font }}>{type}</span>;
+  };
+  const PhaseTag = ({ phase }) => {
+    const m = { Base: [C.greenBg, C.green], Build: [C.orangeBg, C.orange], "Peak & Taper": [C.blueBg, C.blue] };
+    const [bg, fg] = m[phase] || ["#111", "#666"];
+    return <span style={{ background: bg, color: fg, padding: "3px 9px", borderRadius: 4, fontSize: 10, fontWeight: 700, textTransform: "uppercase", fontFamily: font }}>{phase}</span>;
+  };
+  const Bar = ({ pct, color, h }) => (
+    <div style={{ height: h || 5, background: "#1a1a1e", borderRadius: 3, overflow: "hidden" }}>
+      <div style={{ height: "100%", width: `${Math.min(100, pct)}%`, background: color || C.accent, borderRadius: 3, transition: "width 0.4s ease" }} />
+    </div>
+  );
+  const NavBtn = ({ label, active, onClick, icon }) => (
+    <button onClick={onClick} style={{ background: active ? "#16141a" : "transparent", color: active ? C.accent : C.textDim, border: active ? `1px solid #25201a` : "1px solid transparent", padding: "7px 13px", borderRadius: 7, fontSize: 11, fontWeight: 600, cursor: "pointer", fontFamily: font, display: "flex", alignItems: "center", gap: 5, transition: "all 0.2s" }}>
+      {icon && <span style={{ fontSize: 13 }}>{icon}</span>}{label}
+    </button>
+  );
+  const Btn = ({ children, primary, onClick, disabled, style }) => (
+    <button onClick={onClick} disabled={disabled} style={{ background: primary ? C.accent : C.card, color: primary ? C.bg : C.textDim, border: primary ? "none" : `1px solid ${C.cardBorder}`, padding: "10px 18px", borderRadius: 7, fontSize: 12, fontWeight: 600, cursor: disabled ? "not-allowed" : "pointer", fontFamily: font, opacity: disabled ? 0.4 : 1, transition: "all 0.2s", ...style }}>{children}</button>
+  );
+
+  const Header = () => (
+    <div style={{ background: "#0a0a0d", borderBottom: `1px solid ${C.cardBorder}`, padding: "12px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", position: "sticky", top: 0, zIndex: 100 }}>
+      <div style={{ fontSize: 16, fontWeight: 700, color: C.text, fontFamily: font, letterSpacing: "-0.02em", cursor: "pointer" }} onClick={() => { setSelWeek(null); setScreen("dashboard"); }}>
+        FORGE<span style={{ color: C.accent }}>.coach</span>
+      </div>
+      <div style={{ display: "flex", gap: 3, alignItems: "center" }}>
+        {plan && (
+          <>
+            <NavBtn label="Plan" icon="📋" active={screen === "dashboard" || screen === "week"} onClick={() => { setSelWeek(null); setScreen("dashboard"); }} />
+            <NavBtn label="Garmin" icon="⌚" active={screen === "garmin"} onClick={() => setScreen("garmin")} />
+            <NavBtn label="Aero" icon="🫀" active={screen === "aerobic"} onClick={() => setScreen("aerobic")} />
+            <NavBtn label="Fuel" icon="🍶" active={screen === "nutrition"} onClick={() => setScreen("nutrition")} />
+          </>
+        )}
+        <button onClick={() => setShowSettings(!showSettings)} style={{ background: "transparent", border: "none", color: C.textDim, fontSize: 16, cursor: "pointer", padding: "4px 8px" }}>⚙</button>
+      </div>
+    </div>
+  );
+
+  const Wrap = ({ children }) => <div style={{ maxWidth: 860, margin: "0 auto", padding: "20px 16px" }}>{children}</div>;
+
+  // ═══════════════════════════════════════
+  // SETTINGS MODAL
+  // ═══════════════════════════════════════
+  const SettingsModal = () => {
+    if (!showSettings) return null;
+    return (
+      <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.8)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
+        onClick={() => setShowSettings(false)}>
+        <div onClick={e => e.stopPropagation()} style={{ background: C.card, border: `1px solid ${C.cardBorder}`, borderRadius: 12, padding: 24, maxWidth: 440, width: "100%" }}>
+          <div style={{ fontSize: 16, fontWeight: 700, color: C.text, fontFamily: font, marginBottom: 16 }}>Settings</div>
+          <div style={{ fontSize: 11, color: C.textDim, marginBottom: 6 }}>Anthropic API Key (required for AI features)</div>
+          <div style={{ fontSize: 10, color: C.textFaint, marginBottom: 10, lineHeight: 1.5 }}>
+            Get a key from <span style={{ color: C.accent }}>console.anthropic.com</span>. Stored in your browser only — never sent anywhere except the Anthropic API.
+          </div>
+          <input
+            type="password"
+            value={apiKeyInput}
+            onChange={e => setApiKeyInput(e.target.value)}
+            placeholder="sk-ant-..."
+            style={{ background: C.bg, border: `1px solid ${C.cardBorder}`, borderRadius: 6, padding: "9px 12px", color: C.text, fontSize: 12, width: "100%", fontFamily: font, outline: "none", boxSizing: "border-box", marginBottom: 12 }}
+          />
+          <div style={{ display: "flex", gap: 8 }}>
+            <Btn primary onClick={() => { setApiKey(apiKeyInput); setShowSettings(false); }}>Save Key</Btn>
+            <Btn onClick={() => setShowSettings(false)}>Cancel</Btn>
+          </div>
+          {getApiKey() && <div style={{ fontSize: 10, color: C.green, marginTop: 10 }}>✓ API key is set</div>}
+        </div>
+      </div>
+    );
+  };
+
+  // ═══════════════════════════════════════
+  // HOME / GOAL SETUP
+  // ═══════════════════════════════════════
+  if (screen === "home") {
+    return (
+      <div style={{ fontFamily: font, background: C.bg, color: C.text, minHeight: "100vh" }}>
+        <Header />
+        <SettingsModal />
+        <Wrap>
+          <div style={{ textAlign: "center", margin: "36px 0 32px" }}>
+            <div style={{ fontSize: 28, fontWeight: 700, letterSpacing: "-0.03em", marginBottom: 6 }}>What are you training for?</div>
+            <div style={{ fontSize: 13, color: C.textDim, maxWidth: 440, margin: "0 auto", lineHeight: 1.6 }}>
+              FORGE builds a periodised plan around your goal, age (55), commute, and metabolic health priorities. 80/20 polarised. Low-dose carb fuelling.
+            </div>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 10, marginBottom: 20 }}>
+            {GOAL_TEMPLATES.map((t, i) => (
+              <div key={i} onClick={() => setGoal({ ...goal, template: i, name: t.name === "Custom Goal" ? "" : t.name, desc: t.name === "Custom Goal" ? "" : t.desc })}
+                style={{ background: goal.template === i ? "#16141a" : C.card, border: `1px solid ${goal.template === i ? "#2a2218" : C.cardBorder}`, borderRadius: 10, padding: 16, cursor: "pointer", transition: "all 0.2s" }}>
+                <div style={{ fontSize: 24, marginBottom: 6 }}>{t.icon}</div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: goal.template === i ? C.accent : C.text, marginBottom: 4 }}>{t.name}</div>
+                <div style={{ fontSize: 11, color: C.textDim, lineHeight: 1.5 }}>{t.desc}</div>
+              </div>
+            ))}
+          </div>
+
+          {goal.template !== null && (
+            <Box>
+              <Label>Goal Details</Label>
+              <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                <div>
+                  <div style={{ fontSize: 11, color: C.textDim, marginBottom: 4 }}>Name</div>
+                  <input value={goal.name} onChange={e => setGoal({ ...goal, name: e.target.value })}
+                    placeholder="Your goal name" style={{ background: C.bg, border: `1px solid ${C.cardBorder}`, borderRadius: 6, padding: "9px 12px", color: C.text, fontSize: 13, width: "100%", fontFamily: font, outline: "none", boxSizing: "border-box" }} />
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, color: C.textDim, marginBottom: 4 }}>Description</div>
+                  <textarea value={goal.desc} onChange={e => setGoal({ ...goal, desc: e.target.value })}
+                    placeholder="Distance, elevation, what makes it special..." style={{ background: C.bg, border: `1px solid ${C.cardBorder}`, borderRadius: 6, padding: "9px 12px", color: C.text, fontSize: 13, width: "100%", fontFamily: font, outline: "none", minHeight: 60, resize: "vertical", boxSizing: "border-box" }} />
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, color: C.textDim, marginBottom: 4 }}>Event date</div>
+                  <input type="date" value={goal.date} onChange={e => setGoal({ ...goal, date: e.target.value })}
+                    style={{ background: C.bg, border: `1px solid ${C.cardBorder}`, borderRadius: 6, padding: "9px 12px", color: C.text, fontSize: 13, fontFamily: font, outline: "none" }} />
+                </div>
+                {goal.date && (
+                  <div style={{ fontSize: 12, color: C.accent, padding: "8px 12px", background: "#14120e", borderRadius: 6, border: "1px solid #25201a" }}>
+                    {weeksUntil(goal.date)} weeks → Base ({Math.floor(weeksUntil(goal.date) * 0.55)}w) → Build ({Math.floor(weeksUntil(goal.date) * 0.3)}w) → Peak & Taper ({Math.max(1, weeksUntil(goal.date) - Math.floor(weeksUntil(goal.date) * 0.55) - Math.floor(weeksUntil(goal.date) * 0.3))}w)
+                  </div>
+                )}
+              </div>
+            </Box>
+          )}
+
+          {goal.template !== null && (
+            <Box style={{ background: "#0c0c0e" }}>
+              <Label>Your Coaching Framework</Label>
+              <div style={{ fontSize: 12, color: C.textDim, lineHeight: 1.8 }}>
+                {[
+                  ["80/20 Polarised", "80% Z2 volume, 20% high intensity. No junk miles."],
+                  ["Metabolic Health", "Fat oxidation priority. Fuel only what needs fuelling."],
+                  ["Low-dose Carbs", "~15–20g/h. Blood glucose maintenance, not glycogen loading."],
+                  ["Age-aware (55)", "One hard session/week. Strength non-negotiable. Recovery weeks every 4th."],
+                  ["Commute Integrated", "15km each way. Extended return in BST built into the plan."],
+                  ["Multi-sport", "Cycling focus, running intervals + Z2, weekly strength."],
+                ].map(([title, desc], i) => (
+                  <div key={i} style={{ marginBottom: 6 }}><span style={{ color: C.accent }}>{title}:</span> {desc}</div>
+                ))}
+              </div>
+            </Box>
+          )}
+
+          {goal.template !== null && (
+            <Btn primary onClick={createPlan} disabled={!goal.name || !goal.date} style={{ width: "100%", padding: "12px 0", fontSize: 13 }}>
+              Generate Plan →
+            </Btn>
+          )}
+        </Wrap>
+      </div>
+    );
+  }
+
+  // ═══════════════════════════════════════
+  // DASHBOARD
+  // ═══════════════════════════════════════
+  if (screen === "dashboard" && selWeek === null) {
+    return (
+      <div style={{ fontFamily: font, background: C.bg, color: C.text, minHeight: "100vh" }}>
+        <Header />
+        <SettingsModal />
+        <Wrap>
+          <Box style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 14 }}>
+            <div>
+              <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 3 }}>{goal.name}</div>
+              <div style={{ fontSize: 12, color: C.textDim }}>{goal.desc}</div>
+            </div>
+            <div style={{ textAlign: "right" }}>
+              <div style={{ fontSize: 26, fontWeight: 700, color: C.accent }}>{goal.weeksOut}<span style={{ fontSize: 12, color: C.textDim }}> wks</span></div>
+              <div style={{ fontSize: 11, color: C.textFaint }}>{formatDate(goal.date)}</div>
+            </div>
+          </Box>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 8, marginBottom: 12 }}>
+            {[
+              { label: "Compliance", val: `${stats.pct}%`, color: stats.pct >= 75 ? C.green : stats.pct >= 50 ? C.orange : C.red },
+              { label: "Sessions", val: `${stats.done}/${stats.total}`, color: C.text },
+              { label: "Bike", val: `${stats.byType.bike.done}/${stats.byType.bike.total}`, color: C.green },
+              { label: "Run", val: `${stats.byType.run.done}/${stats.byType.run.total}`, color: C.red },
+            ].map((s, i) => (
+              <Box key={i} style={{ textAlign: "center", padding: 14, marginBottom: 0 }}>
+                <div style={{ fontSize: 20, fontWeight: 700, color: s.color }}>{s.val}</div>
+                <div style={{ fontSize: 10, color: C.textDim, textTransform: "uppercase", marginTop: 2 }}>{s.label}</div>
+              </Box>
+            ))}
+          </div>
+
+          <Box>
+            <Label>Weekly Compliance</Label>
+            <div style={{ display: "flex", gap: 3, alignItems: "end", height: 50 }}>
+              {stats.byWeek.map((pct, i) => (
+                <div key={i} onClick={() => setSelWeek(i)} style={{ flex: 1, cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center" }}>
+                  <div style={{ width: "100%", maxWidth: 22, height: Math.max(4, (pct / 100) * 44), background: pct >= 75 ? "#1a3a1a" : pct >= 50 ? "#3a2a0a" : pct > 0 ? "#3a1a1a" : "#141418", borderRadius: 2, transition: "height 0.3s" }} />
+                  <div style={{ fontSize: 8, color: C.textFaint, marginTop: 3 }}>{i + 1}</div>
+                </div>
+              ))}
+            </div>
+          </Box>
+
+          <Box>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <Label>Coach Check-in</Label>
+              <Btn onClick={getCoachInsight} disabled={aiLoading} style={{ padding: "5px 12px", fontSize: 11 }}>
+                {aiLoading ? "Thinking..." : "Get Insight →"}
+              </Btn>
+            </div>
+            {coachInsight ? (
+              <div style={{ fontSize: 12, color: C.text, lineHeight: 1.7, whiteSpace: "pre-wrap" }}>{coachInsight}</div>
+            ) : (
+              <div style={{ fontSize: 12, color: C.textFaint }}>Tap "Get Insight" for an AI coach review. {!getApiKey() && <span style={{ color: C.orange }}>⚙ Add your API key first.</span>}</div>
+            )}
+          </Box>
+
+          <Label>Training Weeks</Label>
+          {plan && plan.map((w, i) => {
+            const wDone = w.done.filter((d, j) => d && w.sessions[j].type !== "rest").length;
+            const wTotal = w.sessions.filter(s => s.type !== "rest").length;
+            const hrs = (w.sessions.reduce((a, s) => a + s.mins, 0) / 60).toFixed(1);
+            return (
+              <div key={i} onClick={() => setSelWeek(i)}
+                style={{ background: C.card, border: `1px solid ${C.cardBorder}`, borderRadius: 8, padding: "12px 16px", marginBottom: 6, cursor: "pointer", transition: "all 0.15s" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: C.textDim, minWidth: 40 }}>W{w.num}</span>
+                    <PhaseTag phase={w.phase} />
+                    <span style={{ fontSize: 11, color: C.textFaint }}>{hrs}h</span>
+                    {w.num % 4 === 0 && <span style={{ fontSize: 9, color: C.blue, background: C.blueBg, padding: "1px 5px", borderRadius: 3, border: `1px solid ${C.blueBorder}` }}>RECOVERY</span>}
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <div style={{ width: 50 }}><Bar pct={(wDone / Math.max(wTotal, 1)) * 100} color={wDone >= wTotal * 0.75 ? C.green : C.accent} /></div>
+                    <span style={{ fontSize: 11, color: C.textDim, minWidth: 28, textAlign: "right" }}>{wDone}/{wTotal}</span>
+                    <span style={{ color: C.textFaint, fontSize: 14 }}>›</span>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+
+          <div style={{ textAlign: "center", marginTop: 20 }}>
+            <Btn onClick={resetApp} style={{ fontSize: 11, color: C.textFaint }}>Reset Plan</Btn>
+          </div>
+        </Wrap>
+      </div>
+    );
+  }
+
+  // ═══════════════════════════════════════
+  // WEEK DETAIL
+  // ═══════════════════════════════════════
+  if ((screen === "dashboard" || screen === "week") && selWeek !== null && plan) {
+    const w = plan[selWeek];
+    return (
+      <div style={{ fontFamily: font, background: C.bg, color: C.text, minHeight: "100vh" }}>
+        <Header />
+        <SettingsModal />
+        <Wrap>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+                <span style={{ fontSize: 20, fontWeight: 700 }}>Week {w.num}</span>
+                <PhaseTag phase={w.phase} />
+                {w.num % 4 === 0 && <span style={{ fontSize: 9, color: C.blue, background: C.blueBg, padding: "2px 6px", borderRadius: 3, border: `1px solid ${C.blueBorder}` }}>RECOVERY</span>}
+              </div>
+              <div style={{ fontSize: 12, color: C.textDim, lineHeight: 1.5 }}>{w.focus}</div>
+            </div>
+            <div style={{ display: "flex", gap: 5 }}>
+              <Btn onClick={() => setSelWeek(Math.max(0, selWeek - 1))} disabled={selWeek === 0}>←</Btn>
+              <Btn onClick={() => setSelWeek(Math.min(plan.length - 1, selWeek + 1))} disabled={selWeek === plan.length - 1}>→</Btn>
+            </div>
+          </div>
+
+          <div style={{ fontSize: 11, color: C.textFaint, marginBottom: 14, display: "flex", gap: 16 }}>
+            <span>Total: {(w.sessions.reduce((a, s) => a + s.mins, 0) / 60).toFixed(1)}hrs</span>
+            <span>Bike: {(w.sessions.filter(s => s.type === "bike" || s.type === "commute").reduce((a, s) => a + s.mins, 0) / 60).toFixed(1)}hrs</span>
+            <span>Run: {(w.sessions.filter(s => s.type === "run").reduce((a, s) => a + s.mins, 0) / 60).toFixed(1)}hrs</span>
+          </div>
+
+          {w.sessions.map((s, i) => (
+            <div key={i} onClick={() => toggle(selWeek, i)}
+              style={{ display: "flex", gap: 11, padding: "12px 14px", background: w.done[i] ? "#0b0f0b" : "#0c0c0e", border: `1px solid ${w.done[i] ? C.greenBorder : "#141418"}`, borderRadius: 8, marginBottom: 5, cursor: "pointer", opacity: w.done[i] ? 0.65 : 1, transition: "all 0.15s" }}>
+              <div style={{ width: 18, height: 18, borderRadius: 4, border: `2px solid ${w.done[i] ? C.green : "#2a2a30"}`, background: w.done[i] ? C.greenBg : "transparent", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: 1, fontSize: 11, color: C.green }}>
+                {w.done[i] && "✓"}
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 4, flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: C.textDim, minWidth: 30 }}>{s.day}</span>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: w.done[i] ? C.textDim : C.text }}>{s.name}</span>
+                  <TypeTag type={s.type} />
+                  {s.zone && s.zone !== "—" && s.zone !== "N/A" && (
+                    <span style={{ fontSize: 11, fontWeight: 600, color: s.zone.includes("4") || s.zone.includes("5") || s.zone === "RACE" ? C.orange : C.blue }}>{s.zone}</span>
+                  )}
+                  {s.mins > 0 && <span style={{ fontSize: 11, color: C.textFaint }}>{s.mins}min</span>}
+                </div>
+                <div style={{ fontSize: 11, color: "#7a7a82", lineHeight: 1.5, marginBottom: s.fuel ? 5 : 0 }}>{s.detail}</div>
+                {s.fuel && (
+                  <div style={{ fontSize: 10, color: C.accentDim, background: "#100e0a", padding: "3px 7px", borderRadius: 3, display: "inline-block" }}>
+                    🍶 {s.fuel}
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+
+          <Box style={{ marginTop: 10 }}>
+            <Label>Week Notes</Label>
+            <textarea value={w.notes} onChange={e => setNotes(selWeek, e.target.value)}
+              placeholder="Energy, sleep, niggles, mood, anything..."
+              style={{ background: C.bg, border: `1px solid ${C.cardBorder}`, borderRadius: 6, padding: "9px 12px", color: C.text, fontSize: 12, width: "100%", fontFamily: font, outline: "none", minHeight: 70, resize: "vertical", boxSizing: "border-box" }} />
+          </Box>
+
+          <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+            <Btn onClick={() => setSelWeek(null)} style={{ flex: 1 }}>← Back to Plan</Btn>
+            <Btn onClick={() => setScreen("garmin")} style={{ flex: 1 }}>Upload Garmin ⌚</Btn>
+          </div>
+        </Wrap>
+      </div>
+    );
+  }
+
+  // ═══════════════════════════════════════
+  // GARMIN
+  // ═══════════════════════════════════════
+  if (screen === "garmin") {
+    return (
+      <div style={{ fontFamily: font, background: C.bg, color: C.text, minHeight: "100vh" }}>
+        <Header />
+        <SettingsModal />
+        <Wrap>
+          <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>Garmin Data</div>
+          <div style={{ fontSize: 12, color: C.textDim, marginBottom: 18 }}>Upload activity screenshots from Garmin Connect. {getApiKey() ? "AI analyses each session." : <span style={{ color: C.orange }}>Add API key in ⚙ for AI analysis.</span>}</div>
+
+          <Box style={{ textAlign: "center", borderStyle: "dashed", cursor: "pointer", padding: 28 }} onClick={() => fileRef.current?.click()}>
+            <input ref={fileRef} type="file" accept="image/*" multiple onChange={uploadGarmin} style={{ display: "none" }} />
+            <div style={{ fontSize: 28, marginBottom: 6 }}>📱</div>
+            <div style={{ fontSize: 13, color: C.textDim }}>Tap to upload Garmin screenshots</div>
+            <div style={{ fontSize: 11, color: C.textFaint, marginTop: 4 }}>Activity summary, weekly report, HR graph — anything useful</div>
+          </Box>
+
+          {aiLoading && (
+            <Box style={{ textAlign: "center" }}>
+              <div style={{ fontSize: 13, color: C.accent }}>⏳ Analysing your session...</div>
+            </Box>
+          )}
+
+          {garminUploads.map((u, i) => (
+            <Box key={u.id || i}>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+                <span style={{ fontSize: 11, color: C.accent, fontWeight: 600 }}>{u.files?.join(", ")}</span>
+                <span style={{ fontSize: 10, color: C.textFaint }}>{formatDate(u.date)}</span>
+              </div>
+              {u.preview && (
+                <img src={u.preview} alt="" style={{ width: "100%", maxHeight: 220, objectFit: "contain", borderRadius: 6, marginBottom: 10, background: C.bg }} />
+              )}
+              <div style={{ fontSize: 12, color: "#aaa", lineHeight: 1.65, whiteSpace: "pre-wrap" }}>{u.analysis}</div>
+            </Box>
+          ))}
+
+          {!garminUploads.length && !aiLoading && (
+            <div style={{ textAlign: "center", padding: 40, color: C.textFaint, fontSize: 13 }}>No uploads yet. Start tracking your sessions.</div>
+          )}
+        </Wrap>
+      </div>
+    );
+  }
+
+  // ═══════════════════════════════════════
+  // AEROBIC FUNCTION
+  // ═══════════════════════════════════════
+  if (screen === "aerobic") {
+    const mafHR = 180 - 55;
+    const testTypes = [
+      { key: "maf_run", label: "MAF Run", icon: "🏃", desc: "Run at MAF HR (125 bpm). Record pace per km. Faster = better fat oxidation." },
+      { key: "maf_bike", label: "MAF Bike", icon: "🚴", desc: "Ride at MAF HR (125 bpm). Record avg power. Higher watts = better aerobic efficiency." },
+      { key: "hr_drift", label: "HR Drift Test", icon: "📈", desc: "Fixed pace/power for 60+ min. Record HR drift %. Under 5% = strong aerobic base." },
+      { key: "fasted_session", label: "Fasted Session", icon: "🔥", desc: "Train fasted (Z2, 60-90 min). Record RPE. Lower RPE over time = better fat adaptation." },
+    ];
+    const mafRunTests = aeroTests.filter(t => t.type === "maf_run" && t.pace).reverse();
+    const mafBikeTests = aeroTests.filter(t => t.type === "maf_bike" && t.power).reverse();
+    const driftTests = aeroTests.filter(t => t.type === "hr_drift" && t.drift).reverse();
+
+    return (
+      <div style={{ fontFamily: font, background: C.bg, color: C.text, minHeight: "100vh" }}>
+        <Header />
+        <SettingsModal />
+        <Wrap>
+          <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>Aerobic Function</div>
+          <div style={{ fontSize: 12, color: C.textDim, marginBottom: 18 }}>Track your fat oxidation capacity over time. These proxy tests tell you whether your mitochondria are adapting.</div>
+
+          <Box style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#12100e" }}>
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 600, color: C.accent }}>Your MAF Heart Rate</div>
+              <div style={{ fontSize: 11, color: C.textDim, marginTop: 2 }}>180 − age (55) = {mafHR} bpm</div>
+            </div>
+            <div style={{ fontSize: 28, fontWeight: 700, color: C.accent }}>{mafHR}</div>
+          </Box>
+
+          <Box>
+            <Label>Log a Test</Label>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 14 }}>
+              {testTypes.map(t => (
+                <div key={t.key} onClick={() => setAeroForm({ ...aeroForm, type: t.key })}
+                  style={{ padding: "10px 12px", background: aeroForm.type === t.key ? "#16141a" : C.bg, border: `1px solid ${aeroForm.type === t.key ? "#2a2218" : C.cardBorder}`, borderRadius: 7, cursor: "pointer", transition: "all 0.15s" }}>
+                  <div style={{ fontSize: 14, marginBottom: 3 }}>{t.icon} <span style={{ fontSize: 12, fontWeight: 600, color: aeroForm.type === t.key ? C.accent : C.text }}>{t.label}</span></div>
+                  <div style={{ fontSize: 10, color: C.textDim, lineHeight: 1.4 }}>{t.desc}</div>
+                </div>
+              ))}
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <div style={{ display: "flex", gap: 10 }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 10, color: C.textDim, marginBottom: 3 }}>Date</div>
+                  <input type="date" value={aeroForm.date} onChange={e => setAeroForm({ ...aeroForm, date: e.target.value })}
+                    style={{ background: C.bg, border: `1px solid ${C.cardBorder}`, borderRadius: 5, padding: "7px 10px", color: C.text, fontSize: 12, fontFamily: font, outline: "none", width: "100%", boxSizing: "border-box" }} />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 10, color: C.textDim, marginBottom: 3 }}>Avg HR (bpm)</div>
+                  <input type="number" placeholder="e.g. 125" value={aeroForm.hr} onChange={e => setAeroForm({ ...aeroForm, hr: e.target.value })}
+                    style={{ background: C.bg, border: `1px solid ${C.cardBorder}`, borderRadius: 5, padding: "7px 10px", color: C.text, fontSize: 12, fontFamily: font, outline: "none", width: "100%", boxSizing: "border-box" }} />
+                </div>
+              </div>
+
+              {(aeroForm.type === "maf_run" || aeroForm.type === "fasted_session") && (
+                <div style={{ display: "flex", gap: 10 }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 10, color: C.textDim, marginBottom: 3 }}>Avg Pace (min:sec/km)</div>
+                    <input placeholder="e.g. 6:30" value={aeroForm.pace} onChange={e => setAeroForm({ ...aeroForm, pace: e.target.value })}
+                      style={{ background: C.bg, border: `1px solid ${C.cardBorder}`, borderRadius: 5, padding: "7px 10px", color: C.text, fontSize: 12, fontFamily: font, outline: "none", width: "100%", boxSizing: "border-box" }} />
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 10, color: C.textDim, marginBottom: 3 }}>Duration (mins)</div>
+                    <input type="number" placeholder="e.g. 45" value={aeroForm.duration} onChange={e => setAeroForm({ ...aeroForm, duration: e.target.value })}
+                      style={{ background: C.bg, border: `1px solid ${C.cardBorder}`, borderRadius: 5, padding: "7px 10px", color: C.text, fontSize: 12, fontFamily: font, outline: "none", width: "100%", boxSizing: "border-box" }} />
+                  </div>
+                </div>
+              )}
+
+              {aeroForm.type === "maf_bike" && (
+                <div style={{ display: "flex", gap: 10 }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 10, color: C.textDim, marginBottom: 3 }}>Avg Power (watts)</div>
+                    <input type="number" placeholder="e.g. 165" value={aeroForm.power} onChange={e => setAeroForm({ ...aeroForm, power: e.target.value })}
+                      style={{ background: C.bg, border: `1px solid ${C.cardBorder}`, borderRadius: 5, padding: "7px 10px", color: C.text, fontSize: 12, fontFamily: font, outline: "none", width: "100%", boxSizing: "border-box" }} />
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 10, color: C.textDim, marginBottom: 3 }}>Duration (mins)</div>
+                    <input type="number" placeholder="e.g. 60" value={aeroForm.duration} onChange={e => setAeroForm({ ...aeroForm, duration: e.target.value })}
+                      style={{ background: C.bg, border: `1px solid ${C.cardBorder}`, borderRadius: 5, padding: "7px 10px", color: C.text, fontSize: 12, fontFamily: font, outline: "none", width: "100%", boxSizing: "border-box" }} />
+                  </div>
+                </div>
+              )}
+
+              {aeroForm.type === "hr_drift" && (
+                <div style={{ display: "flex", gap: 10 }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 10, color: C.textDim, marginBottom: 3 }}>HR Drift (%)</div>
+                    <input type="number" step="0.1" placeholder="e.g. 3.5" value={aeroForm.drift} onChange={e => setAeroForm({ ...aeroForm, drift: e.target.value })}
+                      style={{ background: C.bg, border: `1px solid ${C.cardBorder}`, borderRadius: 5, padding: "7px 10px", color: C.text, fontSize: 12, fontFamily: font, outline: "none", width: "100%", boxSizing: "border-box" }} />
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 10, color: C.textDim, marginBottom: 3 }}>Duration (mins)</div>
+                    <input type="number" placeholder="e.g. 75" value={aeroForm.duration} onChange={e => setAeroForm({ ...aeroForm, duration: e.target.value })}
+                      style={{ background: C.bg, border: `1px solid ${C.cardBorder}`, borderRadius: 5, padding: "7px 10px", color: C.text, fontSize: 12, fontFamily: font, outline: "none", width: "100%", boxSizing: "border-box" }} />
+                  </div>
+                </div>
+              )}
+
+              <div style={{ display: "flex", gap: 10 }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 10, color: C.textDim, marginBottom: 3 }}>RPE (1–10)</div>
+                  <input type="number" min="1" max="10" placeholder="e.g. 4" value={aeroForm.rpe} onChange={e => setAeroForm({ ...aeroForm, rpe: e.target.value })}
+                    style={{ background: C.bg, border: `1px solid ${C.cardBorder}`, borderRadius: 5, padding: "7px 10px", color: C.text, fontSize: 12, fontFamily: font, outline: "none", width: "100%", boxSizing: "border-box" }} />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 10, color: C.textDim, marginBottom: 3 }}>Notes</div>
+                  <input placeholder="Fasted? Weather? Legs?" value={aeroForm.notes} onChange={e => setAeroForm({ ...aeroForm, notes: e.target.value })}
+                    style={{ background: C.bg, border: `1px solid ${C.cardBorder}`, borderRadius: 5, padding: "7px 10px", color: C.text, fontSize: 12, fontFamily: font, outline: "none", width: "100%", boxSizing: "border-box" }} />
+                </div>
+              </div>
+
+              <Btn primary onClick={submitAeroTest} style={{ width: "100%", marginTop: 4 }}>Log Test Result</Btn>
+            </div>
+          </Box>
+
+          {(mafRunTests.length > 1 || mafBikeTests.length > 1 || driftTests.length > 1) && (
+            <Box>
+              <Label>Trends</Label>
+              {mafRunTests.length > 1 && (
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ fontSize: 11, color: C.text, fontWeight: 600, marginBottom: 6 }}>🏃 MAF Run Pace — lower is better</div>
+                  <div style={{ display: "flex", gap: 4, alignItems: "end", height: 60 }}>
+                    {mafRunTests.map((t, i) => {
+                      const parts = t.pace.split(":"); const secs = parseInt(parts[0]) * 60 + (parseInt(parts[1]) || 0);
+                      const pct = Math.max(10, ((600 - secs) / 300) * 100);
+                      return (
+                        <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
+                          <div style={{ fontSize: 9, color: C.accent }}>{t.pace}</div>
+                          <div style={{ width: "100%", maxWidth: 24, height: Math.max(8, (pct / 100) * 44), background: "#1a3a1a", borderRadius: 2 }} />
+                          <div style={{ fontSize: 8, color: C.textFaint }}>{formatDate(t.date).split(" ").slice(0, 2).join(" ")}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+              {mafBikeTests.length > 1 && (
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ fontSize: 11, color: C.text, fontWeight: 600, marginBottom: 6 }}>🚴 MAF Bike Power — higher is better</div>
+                  <div style={{ display: "flex", gap: 4, alignItems: "end", height: 60 }}>
+                    {mafBikeTests.map((t, i) => {
+                      const pct = Math.max(10, (parseInt(t.power) / 250) * 100);
+                      return (
+                        <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
+                          <div style={{ fontSize: 9, color: C.accent }}>{t.power}w</div>
+                          <div style={{ width: "100%", maxWidth: 24, height: Math.max(8, (pct / 100) * 44), background: "#1a2a1a", borderRadius: 2 }} />
+                          <div style={{ fontSize: 8, color: C.textFaint }}>{formatDate(t.date).split(" ").slice(0, 2).join(" ")}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+              {driftTests.length > 1 && (
+                <div>
+                  <div style={{ fontSize: 11, color: C.text, fontWeight: 600, marginBottom: 6 }}>📈 HR Drift — under 5% = strong base</div>
+                  <div style={{ display: "flex", gap: 4, alignItems: "end", height: 60 }}>
+                    {driftTests.map((t, i) => {
+                      const d = parseFloat(t.drift); const pct = Math.max(10, Math.min(100, (d / 15) * 100));
+                      return (
+                        <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
+                          <div style={{ fontSize: 9, color: d <= 5 ? C.green : d <= 8 ? C.orange : C.red }}>{t.drift}%</div>
+                          <div style={{ width: "100%", maxWidth: 24, height: Math.max(8, (pct / 100) * 44), background: d <= 5 ? "#1a3a1a" : d <= 8 ? "#3a2a0a" : "#3a1a1a", borderRadius: 2 }} />
+                          <div style={{ fontSize: 8, color: C.textFaint }}>{formatDate(t.date).split(" ").slice(0, 2).join(" ")}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </Box>
+          )}
+
+          {aeroTests.length > 0 && (
+            <Box>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                <Label>AI Aerobic Analysis</Label>
+                <Btn onClick={getAeroInsight} disabled={aiLoading} style={{ padding: "5px 12px", fontSize: 11 }}>
+                  {aiLoading ? "Analysing..." : "Analyse Trend →"}
+                </Btn>
+              </div>
+              {aeroInsight ? (
+                <div style={{ fontSize: 12, color: C.text, lineHeight: 1.7, whiteSpace: "pre-wrap" }}>{aeroInsight}</div>
+              ) : (
+                <div style={{ fontSize: 12, color: C.textFaint }}>Log 2+ tests then tap "Analyse Trend" for AI interpretation.</div>
+              )}
+            </Box>
+          )}
+
+          {aeroTests.length > 0 && (
+            <>
+              <Label>Test History</Label>
+              {aeroTests.map((t, i) => {
+                const typeInfo = testTypes.find(tt => tt.key === t.type) || testTypes[0];
+                return (
+                  <Box key={t.id || i} style={{ padding: 14, marginBottom: 6 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ fontSize: 14 }}>{typeInfo.icon}</span>
+                        <span style={{ fontSize: 12, fontWeight: 600, color: C.text }}>{typeInfo.label}</span>
+                      </div>
+                      <span style={{ fontSize: 10, color: C.textFaint }}>{formatDate(t.date)}</span>
+                    </div>
+                    <div style={{ display: "flex", gap: 16, flexWrap: "wrap", fontSize: 11 }}>
+                      {t.hr && <span style={{ color: C.textDim }}>HR: <span style={{ color: C.text }}>{t.hr} bpm</span></span>}
+                      {t.pace && <span style={{ color: C.textDim }}>Pace: <span style={{ color: C.accent }}>{t.pace}/km</span></span>}
+                      {t.power && <span style={{ color: C.textDim }}>Power: <span style={{ color: C.accent }}>{t.power}w</span></span>}
+                      {t.drift && <span style={{ color: C.textDim }}>Drift: <span style={{ color: parseFloat(t.drift) <= 5 ? C.green : C.orange }}>{t.drift}%</span></span>}
+                      {t.duration && <span style={{ color: C.textDim }}>Dur: <span style={{ color: C.text }}>{t.duration}min</span></span>}
+                      {t.rpe && <span style={{ color: C.textDim }}>RPE: <span style={{ color: C.text }}>{t.rpe}/10</span></span>}
+                    </div>
+                    {t.notes && <div style={{ fontSize: 10, color: C.textFaint, marginTop: 4 }}>{t.notes}</div>}
+                  </Box>
+                );
+              })}
+            </>
+          )}
+
+          {!aeroTests.length && (
+            <Box style={{ textAlign: "center", padding: 30 }}>
+              <div style={{ fontSize: 13, color: C.textFaint, marginBottom: 6 }}>No tests logged yet</div>
+              <div style={{ fontSize: 11, color: C.textFaint }}>Run or ride at MAF HR ({mafHR} bpm) monthly. Trends over 3–6 months reveal your aerobic development.</div>
+            </Box>
+          )}
+
+          <Box style={{ background: "#0c0c0e" }}>
+            <Label>How to Test</Label>
+            <div style={{ fontSize: 12, color: C.textDim, lineHeight: 1.8 }}>
+              <div style={{ marginBottom: 10 }}><span style={{ color: C.accent, fontWeight: 600 }}>MAF Run:</span> Warm up 15 min. Run 3–5 km at exactly {mafHR} bpm. Record avg pace/km. Repeat monthly, same route, same conditions.</div>
+              <div style={{ marginBottom: 10 }}><span style={{ color: C.accent, fontWeight: 600 }}>MAF Bike:</span> Warm up. Ride 30–45 min at {mafHR} bpm. Record avg power. Rising watts = mitochondria adapting.</div>
+              <div style={{ marginBottom: 10 }}><span style={{ color: C.accent, fontWeight: 600 }}>HR Drift:</span> Fixed pace/power for 60+ min. Drift % = (2nd half HR − 1st half HR) / 1st half HR × 100. Under 5% = strong aerobic base.</div>
+              <div><span style={{ color: C.accent, fontWeight: 600 }}>Fasted Session:</span> Z2 for 60–90 min before breakfast. Log RPE. Lower RPE over time = better metabolic flexibility.</div>
+            </div>
+          </Box>
+
+          <Box style={{ background: "#0c0c0e" }}>
+            <Label>Why This Matters</Label>
+            <div style={{ fontSize: 12, color: C.textDim, lineHeight: 1.8 }}>
+              The 81-year-old 50km world record holder had maximal fat oxidation of 0.55 g/min at 84% of VO2max — extraordinary fat burning at high intensity. His NIRS testing showed mitochondria barely limited by oxygen delivery. These proxy tests track the same adaptations: improving MAF pace or decreasing HR drift means your mitochondria are becoming more efficient — exactly what supports both endurance performance and metabolic health at 55.
+            </div>
+          </Box>
+        </Wrap>
+      </div>
+    );
+  }
+
+  // ═══════════════════════════════════════
+  // NUTRITION
+  // ═══════════════════════════════════════
+  if (screen === "nutrition") {
+    return (
+      <div style={{ fontFamily: font, background: C.bg, color: C.text, minHeight: "100vh" }}>
+        <Header />
+        <SettingsModal />
+        <Wrap>
+          <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>Nutrition Playbook</div>
+          <div style={{ fontSize: 12, color: C.textDim, marginBottom: 18 }}>Based on Noakes et al. (2026) — prevent exercise-induced hypoglycemia with low-dose carbs while maximising fat oxidation.</div>
+
+          <Box>
+            <Label>Core Principle</Label>
+            <div style={{ fontSize: 13, color: C.text, lineHeight: 1.7 }}>
+              Fuel to maintain blood glucose (~15–20g carb/hr), not to maximise carb oxidation. High carb intake suppresses fat burning and paradoxically accelerates glycogen depletion.
+            </div>
+          </Box>
+
+          <Box>
+            <Label>Your Carb Drink</Label>
+            <div style={{ fontSize: 13, color: "#bbb", lineHeight: 1.9 }}>
+              <div><span style={{ color: C.accent, fontWeight: 600 }}>2 tablespoons maltodextrin</span> (~30g)</div>
+              <div><span style={{ color: C.accent, fontWeight: 600 }}>1 teaspoon fructose or honey</span></div>
+              <div><span style={{ color: C.accent, fontWeight: 600 }}>Water to 500ml</span></div>
+              <div style={{ color: C.textDim, marginTop: 6, fontSize: 12 }}>Sip over ~2hrs = ~15g/h. For hydration vest (2L): scale to 16 tbsp maltodextrin.</div>
+            </div>
+          </Box>
+
+          <Box>
+            <Label>Fuel by Session</Label>
+            {[
+              ["🚰", "Z2 under 2 hours", NUTRITION.z2_short],
+              ["🍶", "Z2 over 2 hours", NUTRITION.z2_long],
+              ["🚰", "Tempo/threshold under 90 min", NUTRITION.tempo_short],
+              ["🍶", "Tempo/threshold over 90 min", NUTRITION.tempo_long],
+              ["⚡", "Race day / long event", NUTRITION.race],
+              ["🍌", "Solid food (long rides)", NUTRITION.solid_food],
+              ["🏋️", "Strength", NUTRITION.strength],
+              ["🚲", "Commute", NUTRITION.commute],
+            ].map(([icon, label, rule], i) => (
+              <div key={i} style={{ display: "flex", gap: 10, padding: "9px 0", borderBottom: i < 7 ? `1px solid ${C.cardBorder}` : "none" }}>
+                <span style={{ fontSize: 14, flexShrink: 0 }}>{icon}</span>
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "#ccc", marginBottom: 2 }}>{label}</div>
+                  <div style={{ fontSize: 11, color: C.textDim }}>{rule}</div>
+                </div>
+              </div>
+            ))}
+          </Box>
+
+          <Box>
+            <Label>Race Day Setup (4–5hr events)</Label>
+            <div style={{ fontSize: 12, color: "#bbb", lineHeight: 1.9 }}>
+              {[
+                ["Hydration vest", "2L carb mix (~120g maltodextrin). Sip throughout."],
+                ["On-bike bottle", "Electrolyte drink (SiS Hydro, Nuun, or similar)."],
+                ["Back pocket", "3 gels (40g each). One every 60–90 min from hour 2."],
+                ["Solid food", "Flapjack squares, cream cheese rice cakes, banana."],
+              ].map(([item, detail], i) => (
+                <div key={i} style={{ marginBottom: 4 }}><span style={{ color: C.accent }}>{item}:</span> {detail}</div>
+              ))}
+              <div style={{ color: C.textDim, marginTop: 8, fontSize: 11 }}>Total: ~30–50g carb/h. Well below mainstream 90g/h but sufficient to prevent EIH.</div>
+            </div>
+          </Box>
+
+          <Box>
+            <Label>Rice Cake Recipe</Label>
+            <div style={{ fontSize: 12, color: "#bbb", lineHeight: 1.8 }}>
+              1 cup sushi rice (cooked) · 2 tbsp cream cheese · 1 tbsp soy sauce · pinch of salt
+              <div style={{ color: C.textDim, marginTop: 6, fontSize: 11 }}>Stir cream cheese and soy into hot rice. Press into lined tray (2cm thick). Chill 1hr. Cut into squares. Wrap in foil. ~20–25g carb per square.</div>
+            </div>
+          </Box>
+
+          <Box>
+            <Label>Two-Bottle System</Label>
+            <div style={{ fontSize: 12, color: "#bbb", lineHeight: 1.8 }}>
+              <div><span style={{ color: C.accent }}>Bottle 1:</span> Carb drink (maltodextrin + water)</div>
+              <div><span style={{ color: C.accent }}>Bottle 2:</span> Electrolyte tab + water</div>
+              <div style={{ color: C.textDim, marginTop: 6, fontSize: 11 }}>Alternate sips. Under 2hrs: electrolyte bottle only.</div>
+            </div>
+          </Box>
+        </Wrap>
+      </div>
+    );
+  }
+
+  return null;
+}
+
+ReactDOM.render(<ForgeCoach />, document.getElementById("root"));
+  </script>
+</body>
+</html>
