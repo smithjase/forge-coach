@@ -222,7 +222,7 @@ function ForgeCoach() {
         "anthropic-dangerous-direct-browser-access": "true"
       },
       body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
+        model: "claude-sonnet-4-6",
         max_tokens: 1000,
         messages
       })
@@ -309,9 +309,11 @@ Be direct, concise, 6-8 lines. No markdown. Speak like a coach.`
       images.push({ name: f.name, url });
     }
 
-    let analysis = "Screenshot saved. Add your API key in Settings (⚙) for AI analysis.";
+    const key = getApiKey();
+    if (!key) { setAiLoading(false); setShowSettings(true); return; }
+
+    let analysis = "Screenshot saved.";
     try {
-      const key = getApiKey();
       if (key) {
         const resp = await fetch("https://api.anthropic.com/v1/messages", {
           method: "POST",
@@ -322,7 +324,7 @@ Be direct, concise, 6-8 lines. No markdown. Speak like a coach.`
             "anthropic-dangerous-direct-browser-access": "true"
           },
           body: JSON.stringify({
-            model: "claude-sonnet-4-20250514",
+            model: "claude-sonnet-4-6",
             max_tokens: 1000,
             messages: [{
               role: "user",
@@ -768,7 +770,17 @@ Be direct, warm, and brief. 6-8 lines. No markdown. Speak like a coach, not a te
         <SettingsModal />
         <Wrap>
           <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>Garmin Data</div>
-          <div style={{ fontSize: 12, color: C.textDim, marginBottom: 18 }}>Upload activity screenshots from Garmin Connect. {getApiKey() ? "AI analyses each session." : <span style={{ color: C.orange }}>Add API key in ⚙ for AI analysis.</span>}</div>
+          <div style={{ fontSize: 12, color: C.textDim, marginBottom: 18 }}>Upload activity screenshots from Garmin Connect. {getApiKey() ? "AI analyses each session." : <span style={{ color: C.orange }}>Add your API key below to enable AI analysis.</span>}</div>
+
+          {!getApiKey() && (
+            <Box style={{ background: "#1a1000", border: `1px solid ${C.accent}44`, marginBottom: 12 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: C.accent, marginBottom: 6 }}>Claude API Key Required</div>
+              <div style={{ fontSize: 11, color: C.textDim, marginBottom: 12, lineHeight: 1.6 }}>
+                To analyse your Garmin screenshots with AI, add your Anthropic API key. Get one free at <span style={{ color: C.accent }}>console.anthropic.com</span>.
+              </div>
+              <Btn primary onClick={() => setShowSettings(true)}>Add API Key</Btn>
+            </Box>
+          )}
 
           <Box style={{ textAlign: "center", borderStyle: "dashed", cursor: "pointer", padding: 28 }} onClick={() => fileRef.current?.click()}>
             <input ref={fileRef} type="file" accept="image/*" multiple onChange={uploadGarmin} style={{ display: "none" }} />
