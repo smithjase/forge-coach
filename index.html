@@ -228,7 +228,7 @@ function ForgeCoach() {
       })
     });
     const data = await resp.json();
-    if (data.error) throw new Error(data.error.message || "API error");
+    if (!resp.ok || data.error) throw new Error(data.error?.message || `API error ${resp.status}`);
     return data.content?.filter(i => i.type === "text").map(i => i.text).join(" ") || null;
   }
 
@@ -349,10 +349,11 @@ Be direct and concise. 5-6 lines max. No markdown formatting.` }
           })
         });
         const data = await resp.json();
+        if (!resp.ok || data.error) throw new Error(data.error?.message || `API error ${resp.status}`);
         analysis = data.content?.filter(i => i.type === "text").map(i => i.text).join(" ") || analysis;
       }
     } catch (err) {
-      analysis = "AI analysis failed. Screenshot saved for manual review.";
+      analysis = `AI analysis failed: ${err.message}. Screenshot saved for manual review.`;
     }
 
     // Store preview as thumbnail to save localStorage space
